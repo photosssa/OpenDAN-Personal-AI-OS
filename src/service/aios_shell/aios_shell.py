@@ -80,8 +80,7 @@ class AIOS_Shell:
 
 
 
-    async def _handle_no_target_msg(self,bus:AIBus,msg:AgentMsg) -> bool:
-        target_id = msg.target.split(".")[0]
+    async def _handle_no_target_msg(self,bus:AIBus,target_id:str) -> bool:
         agent : AIAgent = await AgentManager.get_instance().get(target_id)
         if agent is not None:
             bus.register_message_handler(target_id,agent._process_msg)
@@ -138,6 +137,11 @@ class AIOS_Shell:
             logger.error("openai node initial failed!")
             return False
         ComputeKernel.get_instance().add_compute_node(open_ai_node)
+
+        llama_nodes = ComputeNodeConfig.get_instance().initial()
+        for llama_node in llama_nodes:
+            llama_node.start()
+            ComputeKernel.get_instance().add_compute_node(llama_node)
 
         if await AIStorage.get_instance().is_feature_enable("llama"):
             llama_ai_node = LocalLlama_ComputeNode()
@@ -229,7 +233,7 @@ class AIOS_Shell:
         match tunnel_type:
             case "telegram":
                 tunnel_config["type"] = "TelegramTunnel"
-                input_table["token"] = UserConfigItem("telegram bot token")
+                input_table["token"] = UserConfigItem("telegram bot token\n You can get it from https://t.me/BotFather ,read https://core.telegram.org/bots#how-do-i-create-a-bot for more details")
                 input_table["allow"] = UserConfigItem("allow group (default is member,you can choose contact or guest)")
             case "email":
                 tunnel_config["type"] = "EmailTunnel"
@@ -379,6 +383,46 @@ class AIOS_Shell:
                 image = Image.open(io.BytesIO(image_data))
                 image.show()
 
+    async def handle_node_commands(self, args):
+        show_text = FormattedText([("class:title", "sub command not support!\n" 
+                              "/node add llama $model_name $url\n"
+                              "/node rm llama $model_name $url\n"
+                              "/node list\n")])
+        if len(args) < 1:
+            return show_text
+        sub_cmd = args[0]
+        if sub_cmd == "add":
+            if len(args) < 2:
+                return show_text
+            if args[1] == "llama":
+                if len(args) < 4:
+                    return show_text
+                
+                model_name = args[2]
+                url = args[3]
+                ComputeNodeConfig.get_instance().add_node("llama", url, model_name)
+                ComputeNodeConfig.get_instance().save()
+                node = LocalLlama_ComputeNode(url, model_name)
+                node.start()
+                ComputeKernel.get_instance().add_compute_node(node)
+            else:
+                return show_text
+        elif sub_cmd == "rm":
+            if len(args) < 2:
+                return show_text
+            if args[1] == "llama":
+                if len(args) < 4:
+                    return show_text
+                
+                model_name = args[3]
+                url = args[4]
+                ComputeNodeConfig.get_instance().remove_node("llama", url, model_name)
+                ComputeNodeConfig.get_instance().save()
+            else:
+                return show_text
+        elif sub_cmd == "list":
+            print_formatted_text(ComputeNodeConfig.get_instance().list())
+
     async def call_func(self,func_name, args):
         match func_name:
             case 'send':
@@ -429,6 +473,12 @@ class AIOS_Shell:
                 return await self.handle_knowledge_commands(args)
             case 'contact':
                 return await self.handle_contact_commands(args)
+            case 'think':
+                if len(args) >= 1:
+                    target_id = args[0]
+                    the_agent = await AgentManager.get_instance().get(target_id)
+                    if the_agent is not None:
+                        await the_agent._do_think()
             case 'open':
                 if len(args) >= 1:
                     target_id = args[0]
@@ -440,6 +490,16 @@ class AIOS_Shell:
                     topic = args[1]
                 else:
                     topic = "default"
+
+                target_exist = False
+                if await AgentManager.get_instance().is_exist(target_id):
+                    target_exist = True
+                if await WorkflowManager.get_instance().is_exist(target_id):
+                    target_exist = True
+                
+                if target_exist is False:
+                    show_text = FormattedText([("class:error", f"Target {target_id} not exist!")])
+                    return show_text
 
                 self.current_target = target_id
                 self.current_topic = topic
@@ -504,10 +564,12 @@ class AIOS_Shell:
                         format_texts.append(("",f"\n-------------------\n"))
                     return FormattedText(format_texts)
                 return FormattedText([("class:title", f"chatsession not found")])
+            case 'node':
+                return await self.handle_node_commands(args)
             case 'exit':
                 os._exit(0)
             case 'help':
-                return FormattedText([("class:title", f"help~~~")])
+                return FormattedText([("class:title", f"GO to https://github.com/fiatrete/OpenDAN-Personal-AI-OS/issues ^_^")])
 
 
 ##########################################################################################################################
@@ -693,7 +755,8 @@ async def main():
                                '/set_config $key',
                                '/enable $feature',
                                '/disable $feature',
-                               '/list_config',
+                               '/node add llama $model_name $url',
+                               '/node rm llama $model_name $url',
                                '/show',
                                '/exit',
                                '/help'], ignore_case=True)
